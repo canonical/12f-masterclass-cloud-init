@@ -1,0 +1,15 @@
+#cloud-config
+package_update: true
+packages:
+  - openjdk-21-jdk
+
+runcmd:
+  # Install and use Concierge to provision Juju, Canonical Kubernetes, Charmcraft, and Rockcraft.
+  - snap install --classic concierge
+  - concierge prepare -p k8s --charmcraft-channel latest/edge
+
+  # Point Canonical Kubernetes' load balancer at the machine's main IP.
+  - PREFSRC=$(ip -4 route get 2.2.2.2 | grep -oP 'src \K\S+') && k8s set load-balancer.cidrs=$PREFSRC/32
+
+  # Deploy Petclinic's OCI registry to Kubernetes.
+  - curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -
