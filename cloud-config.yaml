@@ -5,25 +5,23 @@ package_upgrade: false
 write_files:
   - path: /usr/local/bin/setup.sh
     permissions: '0755'
-    owner: root:root
+    owner: ubuntu:ubuntu
     content: |
       #!/bin/bash
       set -euo pipefail
-      export PATH="$PATH:/snap/bin"
 
-      # 1. Run concierge to install snaps and set up Juju credentials for ubuntu user
-      su - ubuntu -c "sudo JUJU_DATA=/home/ubuntu/.local/share/juju concierge prepare -p k8s --charmcraft-channel latest/edge"
-      chown -R ubuntu:ubuntu /home/ubuntu/.local/share/juju
+      # 1. Run concierge to install snaps and set up Juju credentials
+      sudo concierge prepare -p k8s --charmcraft-channel latest/edge
 
       # 2. Wait for Kubernetes cluster readiness and configure load balancer IP
-      k8s status --wait-ready
+      sudo k8s status --wait-ready
       IP=$(ip -4 route get 2.2.2.2 | grep -oP 'src \K\S+')
-      k8s set load-balancer.cidrs=$IP/32
+      sudo k8s set load-balancer.cidrs=$IP/32
 
-      # 3. Apply Petclinic OCI registry manifest as ubuntu user
-      su - ubuntu -c "curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -"
+      # 3. Apply Petclinic OCI registry manifest
+      curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -
 
 runcmd:
   - snap wait system seed.loaded
   - snap install --classic concierge
-  - /usr/local/bin/setup.sh 
+  - su - ubuntu -c /usr/local/bin/setup.sh
