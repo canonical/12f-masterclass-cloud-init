@@ -26,4 +26,4 @@ write_files:
 runcmd:
   - snap wait system seed.loaded
   - snap install --classic concierge
-  - systemd-run --unit=concierge-prep /usr/local/bin/setup.sh
+  - /usr/local/bin/setup.sh 
