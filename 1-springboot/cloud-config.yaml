@@ -1,6 +1,8 @@
 #cloud-config
-package_update: false
+package_update: true
 package_upgrade: false
+packages:
+  - openjdk-21-jdk
 
 write_files:
   - path: /usr/local/bin/setup.sh
