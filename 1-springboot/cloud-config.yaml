@@ -4,26 +4,21 @@ package_upgrade: false
 packages:
   - openjdk-21-jdk
 
-write_files:
-  - path: /usr/local/bin/setup.sh
-    permissions: '0755'
-    owner: ubuntu:ubuntu
-    content: |
-      #!/bin/bash
-      set -euo pipefail
-
-      # 1. Run concierge to install snaps and set up Juju credentials
-      sudo concierge prepare -p k8s --charmcraft-channel latest/edge
-
-      # 2. Wait for Kubernetes cluster readiness and configure load balancer IP
-      sudo k8s status --wait-ready
-      IP=$(ip -4 route get 2.2.2.2 | grep -oP 'src \K\S+')
-      sudo k8s set load-balancer.cidrs=$IP/32
-
-      # 3. Apply Petclinic OCI registry manifest
-      curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -
-
 runcmd:
   - snap wait system seed.loaded
   - snap install --classic concierge
-  - su - ubuntu -c /usr/local/bin/setup.sh
+  - |
+    sudo -i -u ubuntu bash << 'EOF'
+    set -euo pipefail
+
+    # 1. Run concierge to install snaps and set up Juju credentials
+    sudo concierge prepare -p k8s --charmcraft-channel latest/edge
+
+    # 2. Wait for Kubernetes cluster readiness and configure load balancer IP
+    sudo k8s status --wait-ready
+    IP=$(ip -4 route get 2.2.2.2 | grep -oP 'src \K\S+')
+    sudo k8s set load-balancer.cidrs=$IP/32
+
+    # 3. Apply Petclinic OCI registry manifest
+    curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -
+    EOF
