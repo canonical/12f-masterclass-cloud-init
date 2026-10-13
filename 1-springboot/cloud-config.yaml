@@ -20,5 +20,5 @@ runcmd:
     sudo k8s set load-balancer.cidrs=$IP/32
 
     # 3. Apply Petclinic OCI registry manifest
-    curl -s https://raw.githubusercontent.com/canonical/spring-petclinic/refs/heads/resources/registry.yaml | kubectl apply -f -
+    curl -s https://assets.ubuntu.com/v1/69d578a0-registry.yaml | kubectl apply -f -
     EOF
