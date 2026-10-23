@@ -1,0 +1,143 @@
+#cloud-config
+write_files:
+  - path: /usr/local/bin/bootstrap-observability
+    owner: root:root
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+
+      log() {
+        printf '\n==> [%s] %s\n' "$(date --iso-8601=seconds)" "$1"
+      }
+
+      as_ubuntu() {
+        sudo -u ubuntu -H bash -lc "$1"
+      }
+
+      prepare_framework_tools() {
+        log "Installing Java for the on-camera Maven build"
+        apt-get update -qq
+        apt-get install -y openjdk-21-jdk-headless
+        log "Enabling the experimental Spring Boot framework tools"
+        snap refresh rockcraft --channel latest/edge
+        snap refresh charmcraft --channel latest/edge
+      }
+
+      prepare_microceph() {
+        log "Preparing MicroCeph object storage"
+        snap install microceph
+        snap refresh --hold microceph
+        microceph cluster bootstrap
+        microceph disk add loop,4G,3
+        microceph enable rgw --port 8081
+        radosgw-admin user create \
+          --uid=tempo \
+          --display-name=Tempo \
+          --access-key=tempo-access-key \
+          --secret-key=tempo-secret-key \
+          >/var/tmp/tempo-rgw-user.json
+      }
+
+      log "Installing Concierge"
+      snap install concierge --classic
+
+      log "Preparing Canonical Kubernetes and Juju"
+      as_ubuntu "sudo concierge prepare -p k8s"
+
+      # These host-only tasks do not depend on Juju. Start MicroCeph first so
+      # object storage is ready while the Kubernetes workloads are installing.
+      prepare_microceph &
+      microceph_pid=$!
+      prepare_framework_tools &
+      framework_tools_pid=$!
+
+      log "Creating the application and observability models"
+      as_ubuntu "juju add-model observability"
+      as_ubuntu "juju set-model-constraints -m observability arch=\$(dpkg --print-architecture)"
+      as_ubuntu "juju add-model petclinic"
+      as_ubuntu "juju set-model-constraints -m petclinic arch=\$(dpkg --print-architecture)"
+
+      log "Creating the development OCI registry"
+      k8s kubectl create deployment local-registry --image=registry:2
+      k8s kubectl create service nodeport local-registry \
+        --tcp=5000:5000 --node-port=32000
+      k8s kubectl rollout status deployment/local-registry --timeout=180s
+
+      node_ip=$(hostname -I | awk '{print $1}')
+      registry="localhost:32000"
+      curl --retry 10 --retry-connrefused --retry-delay 1 \
+        -fsS "http://${registry}/v2/"
+
+      mkdir -p "/etc/containerd/hosts.d/${registry}"
+      printf 'server = "http://%s"\n\n[host."http://%s"]\n  capabilities = ["pull", "resolve"]\n  skip_verify = true\n' \
+        "${registry}" "${registry}" \
+        >"/etc/containerd/hosts.d/${registry}/hosts.toml"
+
+      log "Deploying the Canonical Observability Stack"
+      as_ubuntu "juju deploy -m observability grafana-k8s grafana --channel 12.4/stable --trust"
+      as_ubuntu "juju deploy -m observability prometheus-k8s prometheus --channel 1/stable --trust"
+      as_ubuntu "juju deploy -m observability loki-k8s loki --channel 1/stable --trust"
+      as_ubuntu "juju deploy -m observability traefik-k8s traefik --channel latest/stable --trust"
+
+      as_ubuntu "juju integrate -m observability prometheus:grafana-source grafana:grafana-source"
+      as_ubuntu "juju integrate -m observability prometheus:grafana-dashboard grafana:grafana-dashboard"
+      as_ubuntu "juju integrate -m observability loki:grafana-source grafana:grafana-source"
+      as_ubuntu "juju integrate -m observability loki:grafana-dashboard grafana:grafana-dashboard"
+      as_ubuntu "juju integrate -m observability traefik:ingress grafana:ingress"
+
+      log "Deploying S3 Integrator and Charmed Tempo HA"
+      as_ubuntu "juju deploy -m observability s3-integrator --channel 2/stable --trust"
+      as_ubuntu "juju deploy -m observability tempo-coordinator-k8s tempo --channel 2.10/stable --trust"
+      as_ubuntu "juju deploy -m observability tempo-worker-k8s tempo-worker --channel 2.10/stable --trust"
+      as_ubuntu "juju integrate -m observability tempo:tempo-cluster tempo-worker:tempo-cluster"
+      as_ubuntu "juju integrate -m observability tempo:s3 s3-integrator:s3-credentials"
+      as_ubuntu "juju integrate -m observability tempo:grafana-source grafana:grafana-source"
+      as_ubuntu "juju integrate -m observability tempo:grafana-dashboard grafana:grafana-dashboard"
+
+      log "Configuring Tempo object storage"
+      wait "${microceph_pid}"
+      as_ubuntu "juju wait-for unit -m observability s3-integrator/0 --query='agent-status==\"idle\"' --timeout=15m"
+      as_ubuntu "juju config -m observability s3-integrator endpoint=http://${node_ip}:8081 bucket=tempo path=/tempo region=default s3-uri-style=path"
+
+      secret_uri=$(as_ubuntu "juju add-secret -m observability tempo-s3 access-key=tempo-access-key secret-key=tempo-secret-key" |
+        awk '/secret:/{print $NF}')
+      as_ubuntu "juju grant-secret -m observability tempo-s3 s3-integrator"
+      as_ubuntu "juju config -m observability s3-integrator credentials=${secret_uri}"
+
+      log "Publishing cross-model observability offers"
+      as_ubuntu "juju switch concierge-k8s:observability"
+      as_ubuntu "juju offer loki:logging loki-logging"
+      as_ubuntu "juju offer tempo:tracing tempo-tracing"
+      as_ubuntu "juju offer traefik:ingress traefik-ingress"
+
+      log "Waiting for the observability model"
+      for application in \
+        grafana loki prometheus traefik s3-integrator tempo tempo-worker; do
+        as_ubuntu "juju wait-for application -m observability ${application} --query='status==\"active\"' --timeout=20m"
+      done
+
+      wait "${framework_tools_pid}"
+
+      log "Waiting for Kubernetes workload readiness"
+      k8s kubectl -n observability wait \
+        --for=condition=Ready pod --all --timeout=10m
+
+      cat >/home/ubuntu/demo-env.sh <<EOF
+      export ROCKCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true
+      export CHARMCRAFT_ENABLE_EXPERIMENTAL_EXTENSIONS=true
+      export RGW_ADDRESS=${node_ip}
+      export APP_MODEL=petclinic
+      export OBS_MODEL=observability
+      EOF
+      chown ubuntu:ubuntu /home/ubuntu/demo-env.sh
+
+      as_ubuntu "juju switch concierge-k8s:petclinic"
+
+      log "Bootstrap complete"
+      touch /var/lib/cloud/instance/observability-ready
+
+runcmd:
+  - [chmod, a+rx, /usr/local/bin/bootstrap-observability]
+  - [bash, /usr/local/bin/bootstrap-observability]
+
+final_message: "Observability bootstrap finished after $UPTIME seconds; check cloud-init status for success."
