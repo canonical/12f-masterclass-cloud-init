@@ -14,10 +14,24 @@ write_files:
         sudo -u ubuntu -H bash -lc "$1"
       }
 
+      retry() {
+        local attempts=$1
+        shift
+        local n
+        for n in $(seq 1 "${attempts}"); do
+          "$@" && return 0
+          log "Attempt ${n}/${attempts} failed: $*"
+          sleep 15
+        done
+        return 1
+      }
+
       prepare_framework_tools() {
         log "Installing Java for the on-camera Maven build"
         apt-get update -qq
         apt-get install -y openjdk-21-jdk-headless
+        log "Installing uv for the charm lockfile"
+        snap install astral-uv --classic
         log "Enabling the experimental Spring Boot framework tools"
         snap refresh rockcraft --channel latest/edge
         snap refresh charmcraft --channel latest/edge
@@ -28,8 +42,8 @@ write_files:
         snap install microceph
         snap refresh --hold microceph
         microceph cluster bootstrap
-        microceph disk add loop,4G,3
-        microceph enable rgw --port 8081
+        retry 5 microceph disk add loop,4G,3
+        retry 5 microceph enable rgw --port 8081
         radosgw-admin user create \
           --uid=tempo \
           --display-name=Tempo \
@@ -43,6 +57,10 @@ write_files:
 
       log "Preparing Canonical Kubernetes and Juju"
       as_ubuntu "sudo concierge prepare -p k8s"
+
+      node_ip=$(hostname -I | awk '{print $1}')
+      log "Configuring the single-node load-balancer pool with ${node_ip}"
+      k8s set load-balancer.cidrs="${node_ip}/32"
 
       # These host-only tasks do not depend on Juju. Start MicroCeph first so
       # object storage is ready while the Kubernetes workloads are installing.
@@ -63,7 +81,6 @@ write_files:
         --tcp=5000:5000 --node-port=32000
       k8s kubectl rollout status deployment/local-registry --timeout=180s
 
-      node_ip=$(hostname -I | awk '{print $1}')
       registry="localhost:32000"
       curl --retry 10 --retry-connrefused --retry-delay 1 \
         -fsS "http://${registry}/v2/"
