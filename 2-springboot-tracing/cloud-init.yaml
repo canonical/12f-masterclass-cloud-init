@@ -32,9 +32,6 @@ write_files:
         apt-get install -y openjdk-21-jdk-headless
         log "Installing uv for the charm lockfile"
         snap install astral-uv --classic
-        log "Enabling the experimental Spring Boot framework tools"
-        snap refresh rockcraft
-        snap refresh charmcraft
       }
 
       prepare_microceph() {
