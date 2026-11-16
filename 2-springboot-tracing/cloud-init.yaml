@@ -33,8 +33,8 @@ write_files:
         log "Installing uv for the charm lockfile"
         snap install astral-uv --classic
         log "Enabling the experimental Spring Boot framework tools"
-        snap refresh rockcraft --channel latest/edge
-        snap refresh charmcraft --channel latest/edge
+        snap refresh rockcraft
+        snap refresh charmcraft
       }
 
       prepare_microceph() {
